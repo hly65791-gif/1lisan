@@ -64,7 +64,7 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
           ls -la "$PROJECT_DIR"
 
-      - name: Patch root build.gradle.kts
+      - name: Patch root build.gradle.kts (JVM 17 fix)
         run: |
           set -e
           PROJECT_DIR="${{ steps.locate.outputs.PROJECT_DIR }}"
@@ -74,14 +74,14 @@ jobs:
             exit 1
           fi
           if grep -q "LISAN_JVM_FIX" "$ROOT_GRADLE"; then
-            echo "Patch already applied"
+            echo "JVM patch already applied"
           else
             {
               echo ""
               echo "// LISAN_JVM_FIX"
               echo "subprojects {"
               echo "    afterEvaluate {"
-              echo '        extensions.findByName("android")?.let { ext ->'
+              echo "        extensions.findByName(\"android\")?.let { ext ->"
               echo "            try {"
               echo "                val base = ext as com.android.build.gradle.BaseExtension"
               echo "                base.compileOptions {"
@@ -101,6 +101,43 @@ jobs:
             } >> "$ROOT_GRADLE"
           fi
           tail -30 "$ROOT_GRADLE"
+
+      - name: Patch missing dependencies (domain + feature-settings)
+        run: |
+          set -e
+          PROJECT_DIR="${{ steps.locate.outputs.PROJECT_DIR }}"
+          ROOT_GRADLE="$PROJECT_DIR/build.gradle.kts"
+
+          echo "=== domain/build.gradle.kts (before patch) ==="
+          cat "$PROJECT_DIR/domain/build.gradle.kts" || echo "NOT FOUND"
+          echo ""
+          echo "=== feature-settings/build.gradle.kts (before patch) ==="
+          cat "$PROJECT_DIR/feature-settings/build.gradle.kts" || echo "NOT FOUND"
+
+          if grep -q "LISAN_DEPS_FIX" "$ROOT_GRADLE"; then
+            echo "Deps patch already applied"
+          else
+            {
+              echo ""
+              echo "// LISAN_DEPS_FIX"
+              echo "subprojects {"
+              echo "    afterEvaluate {"
+              echo "        if (name == \"domain\") {"
+              echo "            dependencies {"
+              echo "                add(\"implementation\", \"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1\")"
+              echo "            }"
+              echo "        }"
+              echo "        if (name == \"feature-settings\") {"
+              echo "            dependencies {"
+              echo "                add(\"implementation\", \"androidx.compose.material:material-icons-extended:1.7.5\")"
+              echo "            }"
+              echo "        }"
+              echo "    }"
+              echo "}"
+              echo "// END LISAN_DEPS_FIX"
+            } >> "$ROOT_GRADLE"
+          fi
+          tail -40 "$ROOT_GRADLE"
 
       - name: Make Gradle executable
         run: chmod +x "${{ steps.locate.outputs.PROJECT_DIR }}/gradlew"
