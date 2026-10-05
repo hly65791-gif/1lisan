@@ -56,9 +56,8 @@ jobs:
           set -e
           PROJECT_DIR="${{ steps.locate.outputs.PROJECT_DIR }}"
           ROOT_GRADLE="$PROJECT_DIR/build.gradle.kts"
-          if grep -q "LISAN_FIX" "$ROOT_GRADLE"; then
-            echo "Gradle patch already applied"
-          else
+
+          if ! grep -q "LISAN_FIX" "$ROOT_GRADLE"; then
             echo "" >> "$ROOT_GRADLE"
             echo "// LISAN_FIX" >> "$ROOT_GRADLE"
             echo "subprojects {" >> "$ROOT_GRADLE"
@@ -87,16 +86,39 @@ jobs:
             echo "// END LISAN_FIX" >> "$ROOT_GRADLE"
           fi
 
+          if ! grep -q "LISAN_DEPS_FIX" "$ROOT_GRADLE"; then
+            echo "" >> "$ROOT_GRADLE"
+            echo "// LISAN_DEPS_FIX" >> "$ROOT_GRADLE"
+            echo "subprojects {" >> "$ROOT_GRADLE"
+            echo "    afterEvaluate {" >> "$ROOT_GRADLE"
+            echo "        if (name == \"domain\") {" >> "$ROOT_GRADLE"
+            echo "            dependencies {" >> "$ROOT_GRADLE"
+            echo "                add(\"implementation\", \"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1\")" >> "$ROOT_GRADLE"
+            echo "            }" >> "$ROOT_GRADLE"
+            echo "        }" >> "$ROOT_GRADLE"
+            echo "        if (name == \"feature-settings\") {" >> "$ROOT_GRADLE"
+            echo "            dependencies {" >> "$ROOT_GRADLE"
+            echo "                add(\"implementation\", \"androidx.compose.material:material-icons-extended:1.7.5\")" >> "$ROOT_GRADLE"
+            echo "            }" >> "$ROOT_GRADLE"
+            echo "        }" >> "$ROOT_GRADLE"
+            echo "    }" >> "$ROOT_GRADLE"
+            echo "}" >> "$ROOT_GRADLE"
+            echo "// END LISAN_DEPS_FIX" >> "$ROOT_GRADLE"
+          fi
+
           SETTINGS_FILE="$PROJECT_DIR/feature-settings/src/main/java/com/lisan/feature/settings/SettingsScreen.kt"
           if [ -f "$SETTINGS_FILE" ]; then
-            if grep -q "androidx.compose.ui.platform.LocalLayoutDirection" "$SETTINGS_FILE"; then
-              echo "Import already present"
-            else
+            if ! grep -q "androidx.compose.ui.platform.LocalLayoutDirection" "$SETTINGS_FILE"; then
               sed -i '/^package /a import androidx.compose.ui.platform.LocalLayoutDirection' "$SETTINGS_FILE"
-              echo "Import added"
             fi
-          else
-            echo "::warning::SettingsScreen.kt not found"
+            if ! grep -q "androidx.compose.material.icons.automirrored.filled.Logout" "$SETTINGS_FILE"; then
+              sed -i '/^package /a import androidx.compose.material.icons.automirrored.filled.Logout' "$SETTINGS_FILE"
+            fi
+            if ! grep -q "androidx.compose.material.icons.filled.Logout" "$SETTINGS_FILE"; then
+              sed -i '/^package /a import androidx.compose.material.icons.filled.Logout' "$SETTINGS_FILE"
+            fi
+            echo "=== Imports after patch ==="
+            head -25 "$SETTINGS_FILE"
           fi
 
       - name: Make Gradle executable
