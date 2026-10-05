@@ -1,4 +1,4 @@
-name: Lisan Android Build
+name: name: Lisan Android Build
 
 on:
   workflow_dispatch:
@@ -14,18 +14,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2) Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # 3) إعداد Android SDK بدون android-actions/setup-android@v3
       - name: Setup Android SDK (direct)
         run: |
           set -e
@@ -34,7 +31,6 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$ANDROID_HOME/platform-tools"       >> $GITHUB_PATH
-
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n1)"
           if [ -z "$SDKMANAGER" ]; then
             echo "::error::sdkmanager not found"
@@ -42,56 +38,132 @@ jobs:
           fi
           echo "Using: $SDKMANAGER"
           "$SDKMANAGER" --version
-
-          # قبول الرخص بشكل غير تفاعلي
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-
-          # تثبيت الحزم المطلوبة (compileSdk 35 / build-tools 35)
           "$SDKMANAGER" --install "platform-tools"        || true
           "$SDKMANAGER" --install "platforms;android-35"  || true
           "$SDKMANAGER" --install "build-tools;35.0.0"    || true
-
           echo "=== platforms ==="
           ls -la "$ANDROID_HOME/platforms" || true
           echo "=== build-tools ==="
           ls -la "$ANDROID_HOME/build-tools" || true
 
-      # 4) فك ZIP المشروع
       - name: Extract Lisan project
         run: |
           set -e
           mkdir -p "$RUNNER_TEMP/lisan-src"
           ZIP="$(find . -maxdepth 3 -type f -name '*.zip' | head -n1)"
           if [ -z "$ZIP" ]; then
-            echo "::error::لم يتم العثور على أي ZIP في المستودع"
+            echo "::error::No ZIP found in repo"
             exit 1
           fi
           echo "ZIP: $ZIP"
           unzip -q "$ZIP" -d "$RUNNER_TEMP/lisan-src"
-          echo "=== بنية المشروع (3 مستويات) ==="
+          echo "=== Project layout (3 levels) ==="
           find "$RUNNER_TEMP/lisan-src" -maxdepth 3 -type d | head -50
 
-      # 5) تحديد مسار المشروع (حيث يوجد gradlew)
       - name: Locate Android project
         id: locate
         run: |
           set -e
           GRADLEW="$(find "$RUNNER_TEMP/lisan-src" -type f -name gradlew | head -n1)"
           if [ -z "$GRADLEW" ]; then
-            echo "::error::لم يتم العثور على gradlew داخل ZIP"
+            echo "::error::gradlew not found inside ZIP"
             find "$RUNNER_TEMP/lisan-src" -maxdepth 3 -type f | head -50
             exit 1
           fi
           PROJECT_DIR="$(dirname "$GRADLEW")"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "المشروع في: $PROJECT_DIR"
+          echo "Project located at: $PROJECT_DIR"
           ls -la "$PROJECT_DIR"
 
-      # 6) chmod +x gradlew
+      - name: Patch root build.gradle.kts (JVM 17 fix)
+        run: |
+          set -e
+          PROJECT_DIR="${{ steps.locate.outputs.PROJECT_DIR }}"
+          ROOT_GRADLE="$PROJECT_DIR/build.gradle.kts"
+          if [ ! -f "$ROOT_GRADLE" ]; then
+            echo "::error::build.gradle.kts not found at $ROOT_GRADLE"
+            ls -la "$PROJECT_DIR"
+            exit 1
+          fi
+          if grep -q "LISAN_JVM_FIX" "$ROOT_GRADLE"; then
+            echo "Patch already applied. Skipping."
+          else
+            cat >> "$ROOT_GRADLE" <<'EOF'
+
+// LISAN_JVM_FIX
+subprojects {
+    afterEvaluate {
+        extensions.findByName("android")?.let { ext ->
+            try {
+                val base = ext as com.android.build.gradle.BaseExtension
+                base.compileOptions {
+                    sourceCompatibility = JavaVersion.VERSION_17
+                    targetCompatibility = JavaVersion.VERSION_17
+                }
+            } catch (_: Throwable) {}
+        }
+        tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+            compilerOptions {
+                jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+            }
+        }
+    }
+}
+// END LISAN_JVM_FIX
+EOF
+          fi
+          echo "=== Last 30 lines of build.gradle.kts ==="
+          tail -30 "$ROOT_GRADLE"
+
       - name: Make Gradle executable
         run: chmod +x "${{ steps.locate.outputs.PROJECT_DIR }}/gradlew"
 
-      # 7) تحقق من إصدار Gradle
+      - name: Gradle version
+        working-directory: ${{ steps.locate.outputs.PROJECT_DIR }}
+        run: ./gradlew --version --no-daemon
+
+      - name: Build Debug APK
+        working-directory: ${{ steps.locate.outputs.PROJECT_DIR }}
+        run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Find APK
+        id: find_apk
+        run: |
+          set -e
+          APK="$(find "${{ steps.locate.outputs.PROJECT_DIR }}" -type f -name '*.apk' | head -n1)"
+          if [ -z "$APK" ]; then
+            echo "::error::No APK found after build"
+            exit 1
+          fi
+          echo "APK=$APK" >> "$GITHUB_OUTPUT"
+          echo "=== APK info ==="
+          ls -la "$APK"
+          file "$APK"
+          sha256sum "$APK"
+
+      - name: Validate APK
+        run: |
+          set -e
+          APK="${{ steps.find_apk.outputs.APK }}"
+          SIZE="$(stat -c%s "$APK")"
+          echo "APK size: $SIZE bytes"
+          if [ "$SIZE" -lt 500000 ]; then
+            echo "::error::APK too small - build failed"
+            exit 1
+          fi
+          if ! file "$APK" | grep -qi "zip\|android"; then
+            echo "::error::File is not a valid APK"
+            exit 1
+          fi
+          echo "APK validation passed"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lisan-debug-apk
+          path: ${{ steps.find_apk.outputs.APK }}
+          retention-days: 30      # 7) تحقق من إصدار Gradle
       - name: Gradle version
         working-directory: ${{ steps.locate.outputs.PROJECT_DIR }}
         run: ./gradlew --version --no-daemon
@@ -122,22 +194,4 @@ jobs:
         run: |
           set -e
           APK="${{ steps.find_apk.outputs.APK }}"
-          SIZE="$(stat -c%s "$APK")"
-          echo "APK size: $SIZE bytes"
-          if [ "$SIZE" -lt 500000 ]; then
-            echo "::error::APK صغير جدًا — يبدو أنه فشل بناء"
-            exit 1
-          fi
-          if ! file "$APK" | grep -qi "zip\|android"; then
-            echo "::error::الملف ليس APK صالحًا"
-            exit 1
-          fi
-          echo "✅ تم التحقق من APK بنجاح"
-
-      # 11) رفع APK
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: lisan-debug-apk
-          path: ${{ steps.find_apk.outputs.APK }}
-          retention-days: 30
+          SIZE="$(stat -c%s 
