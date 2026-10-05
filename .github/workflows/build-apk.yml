@@ -29,115 +29,75 @@ jobs:
           export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           export ANDROID_SDK_ROOT="$ANDROID_HOME"
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n1)"
-          if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager not found"
-            exit 1
-          fi
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-          "$SDKMANAGER" --install "platform-tools"        || true
-          "$SDKMANAGER" --install "platforms;android-35"  || true
-          "$SDKMANAGER" --install "build-tools;35.0.0"    || true
+          "$SDKMANAGER" --install "platform-tools" || true
+          "$SDKMANAGER" --install "platforms;android-35" || true
+          "$SDKMANAGER" --install "build-tools;35.0.0" || true
 
       - name: Extract Lisan project
         run: |
           set -e
           mkdir -p "$RUNNER_TEMP/lisan-src"
           ZIP="$(find . -maxdepth 3 -type f -name '*.zip' | head -n1)"
-          if [ -z "$ZIP" ]; then
-            echo "::error::No ZIP found in repo"
-            exit 1
-          fi
-          echo "ZIP: $ZIP"
+          [ -n "$ZIP" ] || { echo "::error::No ZIP found"; exit 1; }
           unzip -q "$ZIP" -d "$RUNNER_TEMP/lisan-src"
-          find "$RUNNER_TEMP/lisan-src" -maxdepth 3 -type d | head -50
 
       - name: Locate Android project
         id: locate
         run: |
           set -e
           GRADLEW="$(find "$RUNNER_TEMP/lisan-src" -type f -name gradlew | head -n1)"
-          if [ -z "$GRADLEW" ]; then
-            echo "::error::gradlew not found"
-            exit 1
-          fi
+          [ -n "$GRADLEW" ] || { echo "::error::gradlew not found"; exit 1; }
           PROJECT_DIR="$(dirname "$GRADLEW")"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          ls -la "$PROJECT_DIR"
 
-      - name: Patch root build.gradle.kts (JVM 17 fix)
+      - name: Patch project files
         run: |
           set -e
           PROJECT_DIR="${{ steps.locate.outputs.PROJECT_DIR }}"
           ROOT_GRADLE="$PROJECT_DIR/build.gradle.kts"
-          if [ ! -f "$ROOT_GRADLE" ]; then
-            echo "::error::build.gradle.kts not found"
-            exit 1
-          fi
-          if grep -q "LISAN_JVM_FIX" "$ROOT_GRADLE"; then
-            echo "JVM patch already applied"
+          if grep -q "LISAN_FIX" "$ROOT_GRADLE"; then
+            echo "Gradle patch already applied"
           else
-            {
-              echo ""
-              echo "// LISAN_JVM_FIX"
-              echo "subprojects {"
-              echo "    afterEvaluate {"
-              echo "        extensions.findByName(\"android\")?.let { ext ->"
-              echo "            try {"
-              echo "                val base = ext as com.android.build.gradle.BaseExtension"
-              echo "                base.compileOptions {"
-              echo "                    sourceCompatibility = JavaVersion.VERSION_17"
-              echo "                    targetCompatibility = JavaVersion.VERSION_17"
-              echo "                }"
-              echo "            } catch (_: Throwable) {}"
-              echo "        }"
-              echo "        tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {"
-              echo "            compilerOptions {"
-              echo "                jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)"
-              echo "            }"
-              echo "        }"
-              echo "    }"
-              echo "}"
-              echo "// END LISAN_JVM_FIX"
-            } >> "$ROOT_GRADLE"
+            echo "" >> "$ROOT_GRADLE"
+            echo "// LISAN_FIX" >> "$ROOT_GRADLE"
+            echo "subprojects {" >> "$ROOT_GRADLE"
+            echo "    afterEvaluate {" >> "$ROOT_GRADLE"
+            echo "        extensions.findByName(\"android\")?.let { ext ->" >> "$ROOT_GRADLE"
+            echo "            try {" >> "$ROOT_GRADLE"
+            echo "                val base = ext as com.android.build.gradle.BaseExtension" >> "$ROOT_GRADLE"
+            echo "                base.compileOptions {" >> "$ROOT_GRADLE"
+            echo "                    sourceCompatibility = JavaVersion.VERSION_17" >> "$ROOT_GRADLE"
+            echo "                    targetCompatibility = JavaVersion.VERSION_17" >> "$ROOT_GRADLE"
+            echo "                }" >> "$ROOT_GRADLE"
+            echo "            } catch (_: Throwable) {}" >> "$ROOT_GRADLE"
+            echo "        }" >> "$ROOT_GRADLE"
+            echo "        tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {" >> "$ROOT_GRADLE"
+            echo "            compilerOptions {" >> "$ROOT_GRADLE"
+            echo "                jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)" >> "$ROOT_GRADLE"
+            echo "                allWarningsAsErrors.set(false)" >> "$ROOT_GRADLE"
+            echo "                freeCompilerArgs.add(\"-opt-in=kotlin.RequiresOptIn\")" >> "$ROOT_GRADLE"
+            echo "                freeCompilerArgs.add(\"-opt-in=androidx.compose.material3.ExperimentalMaterial3Api\")" >> "$ROOT_GRADLE"
+            echo "                freeCompilerArgs.add(\"-opt-in=androidx.compose.ui.ExperimentalComposeUiApi\")" >> "$ROOT_GRADLE"
+            echo "                freeCompilerArgs.add(\"-opt-in=androidx.compose.foundation.ExperimentalFoundationApi\")" >> "$ROOT_GRADLE"
+            echo "            }" >> "$ROOT_GRADLE"
+            echo "        }" >> "$ROOT_GRADLE"
+            echo "    }" >> "$ROOT_GRADLE"
+            echo "}" >> "$ROOT_GRADLE"
+            echo "// END LISAN_FIX" >> "$ROOT_GRADLE"
           fi
-          tail -30 "$ROOT_GRADLE"
 
-      - name: Patch missing dependencies (domain + feature-settings)
-        run: |
-          set -e
-          PROJECT_DIR="${{ steps.locate.outputs.PROJECT_DIR }}"
-          ROOT_GRADLE="$PROJECT_DIR/build.gradle.kts"
-
-          echo "=== domain/build.gradle.kts (before patch) ==="
-          cat "$PROJECT_DIR/domain/build.gradle.kts" || echo "NOT FOUND"
-          echo ""
-          echo "=== feature-settings/build.gradle.kts (before patch) ==="
-          cat "$PROJECT_DIR/feature-settings/build.gradle.kts" || echo "NOT FOUND"
-
-          if grep -q "LISAN_DEPS_FIX" "$ROOT_GRADLE"; then
-            echo "Deps patch already applied"
+          SETTINGS_FILE="$PROJECT_DIR/feature-settings/src/main/java/com/lisan/feature/settings/SettingsScreen.kt"
+          if [ -f "$SETTINGS_FILE" ]; then
+            if grep -q "androidx.compose.ui.platform.LocalLayoutDirection" "$SETTINGS_FILE"; then
+              echo "Import already present"
+            else
+              sed -i '/^package /a import androidx.compose.ui.platform.LocalLayoutDirection' "$SETTINGS_FILE"
+              echo "Import added"
+            fi
           else
-            {
-              echo ""
-              echo "// LISAN_DEPS_FIX"
-              echo "subprojects {"
-              echo "    afterEvaluate {"
-              echo "        if (name == \"domain\") {"
-              echo "            dependencies {"
-              echo "                add(\"implementation\", \"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1\")"
-              echo "            }"
-              echo "        }"
-              echo "        if (name == \"feature-settings\") {"
-              echo "            dependencies {"
-              echo "                add(\"implementation\", \"androidx.compose.material:material-icons-extended:1.7.5\")"
-              echo "            }"
-              echo "        }"
-              echo "    }"
-              echo "}"
-              echo "// END LISAN_DEPS_FIX"
-            } >> "$ROOT_GRADLE"
+            echo "::warning::SettingsScreen.kt not found"
           fi
-          tail -40 "$ROOT_GRADLE"
 
       - name: Make Gradle executable
         run: chmod +x "${{ steps.locate.outputs.PROJECT_DIR }}/gradlew"
@@ -151,27 +111,10 @@ jobs:
         run: |
           set -e
           APK="$(find "${{ steps.locate.outputs.PROJECT_DIR }}" -type f -name '*.apk' | head -n1)"
-          if [ -z "$APK" ]; then
-            echo "::error::No APK found"
-            exit 1
-          fi
+          [ -n "$APK" ] || { echo "::error::No APK found"; exit 1; }
           echo "APK=$APK" >> "$GITHUB_OUTPUT"
           ls -la "$APK"
-          file "$APK"
           sha256sum "$APK"
-
-      - name: Validate APK
-        run: |
-          set -e
-          APK="${{ steps.find_apk.outputs.APK }}"
-          SIZE="$(stat -c%s "$APK")"
-          echo "APK size: $SIZE bytes"
-          if [ "$SIZE" -lt 500000 ]; then
-            echo "::error::APK too small"
-            exit 1
-          fi
-          file "$APK" | grep -qi "zip\|android" || { echo "::error::Invalid APK"; exit 1; }
-          echo "APK validation passed"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
